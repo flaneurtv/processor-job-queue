@@ -1,0 +1,8 @@
+{
+    "topic": "$NAMESPACE_PUBLISHER/job_queue/$TOPIC",
+    "service_uuid": "$SERVICE_UUID",
+    "service_name": "$SERVICE_NAME",
+    "service_host": "$SERVICE_HOST",
+    "created_at": "$CREATED_AT",
+    "payload": $PAYLOAD
+}
