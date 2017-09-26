@@ -1,4 +1,153 @@
 #!/usr/bin/env python
+import datetime as dt
+import redis as r
+import uuid, ciso8601
 
-import redis
-import uuid
+### Begin Logging Setup ###
+import logging
+
+# Need to add our own logging formatter to enable millisecond time resolution
+class MyFormatter(logging.Formatter):
+    converter=dt.datetime.fromtimestamp
+    def format(self, record):
+        record.msg = record.msg.replace("\n","\\n").replace("\r","\\r").replace('"', '\\"')
+        return super(MyFormatter, self).format(record)
+    def formatTime(self, record, datefmt=None):
+        ct = self.converter(record.created)
+        if datefmt:
+            s = ct.strftime(datefmt)
+        else:
+            t = ct.strftime("%Y-%m-%d %H:%M:%S")
+            s = "%s.%03d" % (t, record.msecs)
+        return s
+
+# We log json to stderr, which is picked up by the service-adapter and published
+# to the respective message bus.
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+console_handler = logging.StreamHandler()
+formatter = MyFormatter('{"log_level": "%(levelname)s", "created_at": "%(asctime)s", "log_message": "%(message)s"}', '%Y-%m-%dT%H:%M:%S.%fZ')
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
+### End Logging Setup ###
+
+
+r = redis.StrictRedis(host='redis', port=6379, db=0)
+
+# declare constants
+TICK_INTERVAL = 3000
+IDLE_EXPIRY_PERIOD = TICK_INTERVAL * 3
+MAX_LEASE_TIME = TICK_INTERVAL * 3
+JOBS_QUEUED = "jobs_queued:"
+JOBS_DISPATCHED = "jobs_dispatched:"
+JOBS_PROCESSING = "jobs_processing:"
+JOBS_PROGRESS = "jobs_progress:"
+WORKERS_ALIVE = "workers_alive:"
+WORKERS_DISPATCHED = "workers_dispatched:"
+WORKERS_IDLE_GROUP = "workers_idle:"
+WORKERS_BUSY_GROUP = "workers_busy:"
+
+namespace_listener = os.getenv("NAMESPACE_LISTENER", "")
+namespace_publisher = os.getenv("NAMESPACE_PUBLISHER", "")
+
+def addJob(message_obj):
+    logger.error("addJob")
+    pipe = r.pipeline()
+    pipe.hset(payload_obj["uuid"], "json", json.dumps(message_obj["payload"], separators=(',',':')));
+    pipe.lpush(JOBS_QUEUED + message_obj["payload"]["queue_name"], message_obj["payload"]["uuid"]);
+    pipe.execute();
+
+dispatchJob_lua = """
+local job_uuid = redis.call("RPOP", "' + JOBS_QUEUED + '" .. KEYS[1])
+if job_uuid != nil then
+  redis.call("ZADD", "' + JOBS_DISPATCHED + '" .. KEYS[1], KEYS[2], job_uuid)
+  redis.call("HSET", job_uuid, "dispatched_at", KEYS[2])
+  return redis.call("HGET", job_uuid, "json")
+end"""
+
+dispatchJob_script = r.register_script(dispatchJob_lua)
+
+def dispatchJob(queue_name, worker_uuid):
+    logger.error("dispatchJob")
+    dispatched_at = dt.datetime.now().isoformat() + "Z"
+    result = dispatchJob_script(keys=[queue_name, dispatched_at], args=[])
+    if result:
+        job_obj = json.loads(result)
+        job_obj["dispatched_at"] = dispatched_at
+        topic = worker_uuid + "/job_assignment"
+        r.zrem(WORKERS_IDLE_GROUP + queue_name, worker_uuid)
+        stdoutMessage(topic, job_obj)
+
+def getIdleWorker(queue_name):
+    logger.error("getIdleWorker")
+    pipe = r.pipeline
+    pipe.watch(WORKERS_IDLE_GROUP + queue_name)
+    worker_uuid = pipe.zrange(WORKERS_IDLE_GROUP + queue_name, 0, 0)
+    pipe.multi()
+    pipe.zdiffstore(WORKERS_IDLE_GROUP + queue_name, WORKERS_BUSY_GROUP + queue_name, WORKERS_IDLE_GROUP + queue_name)
+    pipe.zrem(WORKERS_IDLE_GROUP + queue_name, WORKERS_BUSY_GROUP + queue_name worker_uuid)
+    pipe.execute()
+    if worker_uuid:
+        return worker_uuid
+    else:
+        return None
+
+def workerIdle(message_obj):
+    logger.error("workerIdle")
+    timestamp = ciso8601.parse_datetime(message_obj["created_at"]).timestamp()
+    r.zadd(WORKERS_IDLE_GROUP + message_obj["payload"]["queue_name"], timestamp, message_obj["service_uuid"])
+
+def acceptJob(message_obj):
+    logger.error("acceptJob")
+    queue_name = message_obj["payload"]["queue_name"]
+    pipe = r.pipeline
+    pipe.zrem(JOBS_DISPATCHED + queue_name, message_obj["payload"]["uuid"])
+    pipe.zadd(JOBS_PROCESSING + queue_name, message_obj["created_at"], message_obj["payload"]["uuid"])
+    pipe.zadd(JOBS_PROGRESS + queue_name, 0, message_obj["payload"]["uuid"])
+    pipe.zrem(WORKERS_IDLE_GROUP + queue_name, message_obj["service_uuid"])
+    pipe.hset(message_obj["payload"]["uuid"], "started_at", message_obj["created_at"])
+    pipe.execute()
+
+# reading line by line from stdin
+try:
+    for json_string in sys.stdin:
+        json_string = json_string.strip()
+        try:
+            # first we check if the payload is valid JSON
+            try:
+                message_obj = json.loads(json_string)
+            except ValueError as e:  # includes simplejson.decoder.JSONDecodeError
+                logger.error('json_parse_error: %(error)s. string_parsed: %(json_string)s' % {'error': str(e), 'json_string': json_string})
+                raise
+            topic = message_obj["topic"].replace(namespace_listener + "/","")
+            prefix = "job_queue/"
+            if topic === prefix + "add_job":
+                addJob(message_obj)
+                worker_uuid = getIdleWorker(message_obj["payload"]["queue_name"])
+                if worker_uuid:
+                    dispatchJob(message_obj["payload"]["queue_name"], worker_uuid)
+            elif topic === prefix + "worker_idle":
+                # we could use WORKERS_IDLE_LIST only to purge unresponsive workers,
+                # but add and remove workers deterministically.
+                # discard messages older than TICK_INTERVAL
+                if ciso8601.parse_datetime(message_obj["created_at"]).timestamp() > dt.datetime.now().timestamp() - TICK_INTERVAL:
+                    updateWorker(message_obj)
+                    dispatchJob(message_obj["payload"]["queue_name"], message_obj["service_uuid"])
+            elif topic === prefix + "job_accepted":
+                acceptJob(message_obj)
+            elif topic === prefix + "worker_progress":
+                updateProgress()
+            elif topic === prefix + "job_completed":
+                completeJob()
+            elif topic === "tick":
+                restoreUnAccepted()
+                restoreStaleProgress()
+            elif topic === "list_queue_jobs":
+            elif topic === "list_queue_workers":
+            elif topic === "list_queue_progress":
+            elif topic === "list_queue_dispatched":
+except IOError as e:
+    if e.errno == errno.EPIPE:
+        logger.error("service-processor stdin PIPE was closed")
+    else:
+        logger.error("service-processor error")
