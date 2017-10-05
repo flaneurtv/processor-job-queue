@@ -101,21 +101,22 @@ function dispatchJob(queue_name, worker_uuid) {
     console.error("dispatchJob", message_obj)
     dispatched_at = Date.now();
     client.eval(dispatchJob_lua, 2, queue_name, dispatched_at, function(err, res) {
-
-        console.error(err);
-        console.error(res);
+      console.error(err);
+      console.error(res);
+      if (res != nil) {
         job_obj = JSON.parse(res);
         job_obj.dispatched_at = dispatched_at;
         topic = worker_uuid + "/job_assignment"
         stdoutMessage(topic, job_obj);
-        /*
-           We purge expired workers from the idle list for a particular queue_name,
-           whenever a job is leased from this queue. Purging expired workers is not
-           a necessity for proper operation. But in case number and UUIDs of
-           workers change frequently e.g. due to elastic scaling of workers, it
-           makes sense in the long run.
-         */
-        purgeExpiredWorkers(queue_name, Date.now() - IDLE_EXPIRY_PERIOD)
+      }
+      /*
+         We purge expired workers from the idle list for a particular queue_name,
+         whenever a job is leased from this queue. Purging expired workers is not
+         a necessity for proper operation. But in case number and UUIDs of
+         workers change frequently e.g. due to elastic scaling of workers, it
+         makes sense in the long run.
+       */
+      purgeExpiredWorkers(queue_name, Date.now() - IDLE_EXPIRY_PERIOD)
     });
 }
 
