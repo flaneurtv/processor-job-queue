@@ -40,14 +40,17 @@ r = redis.StrictRedis(host='redis', port=6379, db=0)
 #
 # declare constants
 TICK_INTERVAL = 3000
-WORKER_EXPIRY_PERIOD = TICK_INTERVAL * 3
-MAX_LEASE_TIME = TICK_INTERVAL * 3
+WORKER_EXPIRY_PERIOD = TICK_INTERVAL * 2
+MAX_LEASE_TIME = TICK_INTERVAL * 2
 #
 # JOBS_QUEUED - Redis List - holds available jobs
 JOBS_QUEUED = "jobs_queued:"
 #
 # JOBS_DISPATCHED - Redis Sorted Set - holds jobs dispatched but not yet accepted
 JOBS_DISPATCHED = "jobs_dispatched:"
+#
+# JOBS_FINISHED - Redis Sorted Set - holds finished jobs
+JOBS_FINISHED = "jobs_finished:"
 #
 # JOBS_PROCESSING - Redis Sorted Set - holds dispatched jobs, which have been 
 # accepted by a worker and are therefore processing now. Score is the timestamp 
@@ -57,6 +60,7 @@ JOBS_PROCESSING = "jobs_processing:"
 #
 # JOBS_PROGRESS - Redis Sorted Set - holds the same jobs as JOBS_PROCESSING but SCORE is the
 # percentage finished represented by a float between 1 and 0.
+# (this information could as well be stored in the job_uuid hash instead)
 JOBS_PROGRESS = "jobs_progress:"
 #
 # WORKERS_LAST_SEEN - Redis Sorted Set - is there just for maintenance, it holds
@@ -93,78 +97,162 @@ namespace_publisher = os.getenv("NAMESPACE_PUBLISHER", "")
 # hset job_uuid job
 # lpush to JOBS_QUEUED:queue_name
 def addJob(message_obj):
-    logger.error("addJob")
+    logger.debug("addJob")
+    queue_name = message_obj["payload"]["queue_name"]
+    job_uuid = message_obj["payload"]["uuid"]
     pipe = r.pipeline()
-    pipe.hset(payload_obj["uuid"], "json", json.dumps(message_obj["payload"], separators=(',',':')));
-    pipe.lpush(JOBS_QUEUED + message_obj["payload"]["queue_name"], message_obj["payload"]["uuid"]);
+    pipe.multi()
+    pipe.hset(job_uuid, "json", json.dumps(message_obj["payload"], separators=(',',':')))
+    pipe.lpush(JOBS_QUEUED + queue_name, job_uuid)
     pipe.execute();
+    
+def workerIdle(message_obj):
+    logger.debug("workerIdle")
+    queue_name = message_obj["payload"]["queue_name"]
+    last_seen = ciso8601.parse_datetime(message_obj["created_at"]).timestamp()
+    worker_uuid = message_obj["service_uuid"]
+    pipe = r.pipeline()
+    pipe.multi()
+    pipe.sadd(WORKERS_IDLE_SET + queue_name, worker_uuid)
+    pipe.srem(WORKERS_BUSY_SET + queue_name, worker_uuid)
+    pipe.zadd(WORKERS_LAST_SEEN + queue_name, last_seen, worker_uuid)
+    pipe.execute()
+
+def workerBusy(message_obj):
+    logger.debug("workerBusy")
+    queue_name = message_obj["payload"]["queue_name"]
+    last_seen = ciso8601.parse_datetime(message_obj["created_at"]).timestamp()
+    worker_uuid = message_obj["service_uuid"]
+    try:
+        job_progress = message_obj["payload"]["status"]["progress"]
+    except:
+        job_progress = 0
+    pipe = r.pipeline()
+    pipe.multi()
+    pipe.srem(WORKERS_IDLE_SET + queue_name, worker_uuid)
+    pipe.sadd(WORKERS_BUSY_SET + queue_name, worker_uuid)
+    pipe.zadd(WORKERS_LAST_SEEN + queue_name, last_seen, worker_uuid)
+    pipe.zadd(JOBS_PROCESSING + queue_name, last_seen, job_uuid)
+    # Progress could potentially be saved in hash instead
+    pipe.zadd(JOBS_PROGRESS + queue_name, job_progress, job_uuid)
+    pipe.execute()
+
+def jobFinished(message_obj):
+    logger.debug("jobFinished")
+    queue_name = message_obj["payload"]["queue_name"]
+    job_uuid = message_obj["payload"]["uuid"]
+    finished_at = message_obj["payload"]["finished_at"]
+    last_seen = ciso8601.parse_datetime(message_obj["created_at"]).timestamp()
+    worker_uuid = message_obj["service_uuid"]
+    pipe = r.pipeline()
+    pipe.multi()
+    pipe.sadd(WORKERS_IDLE_SET + queue_name, worker_uuid)
+    pipe.srem(WORKERS_BUSY_SET + queue_name, worker_uuid)
+    pipe.zadd(WORKERS_LAST_SEEN + queue_name, last_seen, worker_uuid)
+    pipe.zrem(JOBS_PROCESSING + queue_name, job_uuid)
+    pipe.zrem(JOBS_PROGRESS + queue_name, job_uuid)
+    pipe.hset(job_uuid, "json", json.dumps(message_obj["payload"], separators=(',',':')), "finished_at", finished_at, "worker_uuid", worker_uuid)
+    pipe.zadd(JOBS_FINISHED + queue_name, finished_at, job_uuid)
+    pipe.execute()
 
 dispatchJob_lua = """
-local job_uuid = redis.call("RPOP", "' + JOBS_QUEUED + '" .. KEYS[1])
-if job_uuid != nil then
-  redis.call("ZADD", "' + JOBS_DISPATCHED + '" .. KEYS[1], KEYS[2], job_uuid)
-  redis.call("HSET", job_uuid, "dispatched_at", KEYS[2])
-  return redis.call("HGET", job_uuid, "json")
-end"""
+local job_uuid = redis.call("RPOP", KEYS[1])
+local worker_uuid = redis.call("SRANDMEMBER", KEYS[3])
 
+if job_uuid != nil and worker_uuid != nil then
+    redis.call("ZADD", KEYS[2], tonumber(ARGV[1]), job_uuid)
+    redis.call("HSET", job_uuid, "dispatched_at", tonumber(ARGV[1]))
+    redis.call("SREM", worker_uuid, KEYS[3])
+    redis.call("SADD", worker_uuid, KEYS[4])
+    job_json = redis.call("HGET", job_uuid, "json")
+    return {job_json, worker_uuid}
+else
+    redis.call("RPUSH", KEYS[1], job_uuid)
+    return false
+end
+"""
 dispatchJob_script = r.register_script(dispatchJob_lua)
 
-dispatchJob_lua = """
-
-local job_uuid = redis.call("RPOP", "' + JOBS_QUEUED + '" .. KEYS[1])
-local worker_uuid = redis.call()
-
-if job_uuid != nil then
-  redis.call("ZADD", "' + JOBS_DISPATCHED + '" .. KEYS[1], KEYS[2], job_uuid)
-  redis.call("HSET", job_uuid, "dispatched_at", KEYS[2])
-  return redis.call("HGET", job_uuid, "json")
-end"""
-
-dispatchJob_script = r.register_script(dispatchJob_lua)
-
-
-def dispatchJob(queue_name, worker_uuid):
-    logger.error("dispatchJob")
+def dispatchJob(message_obj):
+    logger.debug("jobFinished")
+    queue_name = message_obj["payload"]["queue_name"]
+    # cleanup duplicated entries
+    r.sdiffstore(WORKERS_IDLE_SET + queue_name, WORKERS_BUSY_SET + queue_name, WORKERS_IDLE_SET + queue_name)
     dispatched_at = dt.datetime.now().isoformat() + "Z"
-    job_json = dispatchJob_script(keys=[queue_name, dispatched_at], args=[])
-    if job_json:
+    result = dispatchJob_script(keys=[
+        JOBS_QUEUED + queue_name,
+        JOBS_DISPATCHED + queue_name,
+        WORKERS_IDLE_SET + queue_name,
+        WORKERS_BUSY_SET + queue_name
+        ], args=[dispatched_at])
+    if result:
+        job_json = result[0]
+        worker_uuid = result[1]
         job_obj = json.loads(job_json)
         job_obj["dispatched_at"] = dispatched_at
-        topic = worker_uuid + "/job_assignment"
-        r.sdiffstore(WORKERS_IDLE_SET + queue_name, WORKERS_BUSY_SET + queue_name, WORKERS_IDLE_SET + queue_name)
-        worker_uuid = r.randmember(WORKERS_IDLE_SET + queue_name)
-        r.zmove(WORKERS_IDLE_SET + queue_name, WORKERS_BUSY_SET + queue_name, worker_uuid)
-        stdoutMessage(topic, job_obj)
-
-def getIdleWorker(queue_name):
-    logger.error("getIdleWorker")
-    pipe = r.pipeline
-    pipe.watch(WORKERS_IDLE_SET + queue_name)
-    worker_uuid = pipe.zrange(WORKERS_IDLE_SET + queue_name, 0, 0)
-    pipe.multi()
-    pipe.zdiffstore(WORKERS_IDLE_SET + queue_name, WORKERS_BUSY_SET + queue_name, WORKERS_IDLE_SET + queue_name)
-    pipe.zrem(WORKERS_IDLE_SET + queue_name, WORKERS_BUSY_SET + queue_name worker_uuid)
-    pipe.execute()
-    if worker_uuid:
-        return worker_uuid
-    else:
-        return None
-
-def workerIdle(message_obj):
-    logger.error("workerIdle")
-    timestamp = ciso8601.parse_datetime(message_obj["created_at"]).timestamp()
-    r.zadd(WORKERS_IDLE_SET + message_obj["payload"]["queue_name"], timestamp, message_obj["service_uuid"])
-
-def acceptJob(message_obj):
-    logger.error("acceptJob")
+        topic = namespace_publisher + "job_queue/workers/" + worker_uuid + "/job_assignment"
+        stdoutMessage(topic, json.dumps(job_obj))
+        # that should be it!
+    
+def jobAccepted(message_obj):
+    logger.debug("jobAccepted")
+    # removing job from JOBS_DISPATCHED
+    # adding job to JOBS_PROCESSING with started_at as score
+    # adding job to JOBS_PROGRESS with 0 as score
     queue_name = message_obj["payload"]["queue_name"]
-    pipe = r.pipeline
-    pipe.zrem(JOBS_DISPATCHED + queue_name, message_obj["payload"]["uuid"])
-    pipe.zadd(JOBS_PROCESSING + queue_name, message_obj["created_at"], message_obj["payload"]["uuid"])
-    pipe.zadd(JOBS_PROGRESS + queue_name, 0, message_obj["payload"]["uuid"])
-    pipe.zrem(WORKERS_IDLE_SET + queue_name, message_obj["service_uuid"])
-    pipe.hset(message_obj["payload"]["uuid"], "started_at", message_obj["created_at"])
-    pipe.execute()
+    job_uuid = message_obj["payload"]["uuid"]
+    started_at = message_obj["payload"]["started_at"]
+    worker_uuid = message_obj["service_uuid"]
+    pipe = r.pipeline()
+    pipe.multi()
+    pipe.zrem(JOBS_DISPATCHED + queue_name, job_uuid)
+    pipe.zadd(JOBS_PROCESSING + queue_name, started_at, job_uuid);
+    pipe.zadd(JOBS_PROGRESS + queue_name, 0, job_uuid);
+    pipe.hset(job_uuid, "json", json.dumps(message_obj["payload"], separators=(',',':')), "started_at", message_obj["payload"]["started_at"], "worker_uuid", worker_uuid)
+    pipe.execute();
+
+re_add_unaccepted_jobs_lua = """
+local stale_jobs = redis.call("ZREVRANGEBYSCORE", KEYS[2], tonumber(ARGV[1]), "+inf")
+
+for index, job_uuid in ipairs(stale_jobs) do
+  redis.call("ZREM", KEYS[2], job_uuid)
+  redis.call("RPUSH", KEYS[1], job_uuid)
+end
+"""
+re_add_unaccepted_jobs_script = r.register_script(re_add_unaccepted_jobs_lua)
+
+def reAddUnacceptedJobs(message_obj):
+    logger.debug("reAddUnacceptedJobs")
+    # move jobs in JOBS_DISPATCHED older than MAX_LEASE_TIME back to JOBS_QUEUED
+    queue_name = message_obj["payload"]["queue_name"]
+    from_timestamp = dt.datetime.now().timestamp() - MAX_LEASE_TIME
+    re_add_unaccepted_jobs_script(keys=[
+        JOBS_QUEUED + queue_name,
+        JOBS_DISPATCHED + queue_name
+        ], args=[from_timestamp])
+
+remove_stale_workers_lua = """
+local stale_workers = redis.call("ZREVRANGEBYSCORE", KEYS[3], "-inf", tonumber(ARGV[1]))
+
+for index, job_uuid in ipairs(stale_workers) do
+  redis.call("SREM", KEYS[1], job_uuid)
+  redis.call("SREM", KEYS[2], job_uuid)
+  redis.call("ZREM", KEYS[3], job_uuid)
+end
+"""
+remove_stale_workers_script = r.register_script(remove_stale_workers_lua)
+
+def removeStaleWorkers(message_obj):
+    logger.debug("removeStaleWorkers")
+    # move workers not heard from for longer than WORKER_EXPIRY_PERIOD
+    queue_name = message_obj["payload"]["queue_name"]
+    from_timestamp = dt.datetime.now().timestamp() - WORKER_EXPIRY_PERIOD
+    remove_stale_workers_script(keys=[
+        WORKERS_IDLE_SET + queue_name,
+        WORKERS_BUSY_SET + queue_name,
+        WORKERS_LAST_SEEN + queue_name
+        ], args=[from_timestamp])
+    
 
 # reading line by line from stdin
 try:
@@ -180,28 +268,24 @@ try:
             topic = message_obj["topic"].replace(namespace_listener + "/","")
             prefix = "job_queue/"
             if topic === prefix + "add_job":
-                addJob(message_obj)
-                
-                
-                worker_uuid = getIdleWorker(message_obj["payload"]["queue_name"])
-                if worker_uuid:
-                    dispatchJob(message_obj["payload"]["queue_name"], worker_uuid)
-            elif topic === prefix + "worker_idle":
-                # we could use WORKERS_IDLE_LIST only to purge unresponsive workers,
-                # but add and remove workers deterministically.
-                # discard messages older than TICK_INTERVAL
-                if ciso8601.parse_datetime(message_obj["created_at"]).timestamp() > dt.datetime.now().timestamp() - TICK_INTERVAL:
-                    updateWorker(message_obj)
-                    dispatchJob(message_obj["payload"]["queue_name"], message_obj["service_uuid"])
-            elif topic === prefix + "job_accepted":
-                acceptJob(message_obj)
-            elif topic === prefix + "worker_progress":
-                updateProgress()
-            elif topic === prefix + "job_completed":
-                completeJob()
+                addJob(message_obj)    
+                reAddUnacceptedJobs(message_obj)
+                removeStaleWorkers(message_obj)
+                dispatchJob(message_obj)
             elif topic === "tick":
-                restoreUnAccepted()
-                restoreStaleProgress()
+                reAddUnacceptedJobs(message_obj)
+                removeStaleWorkers(message_obj)
+            elif topic === prefix + "worker_idle":
+                workerIdle(message_obj)
+                # do not serve messages older than TICK_INTERVAL
+                if ciso8601.parse_datetime(message_obj["created_at"]).timestamp() > dt.datetime.now().timestamp() - TICK_INTERVAL:
+                    dispatchJob(message_obj)
+            elif topic === prefix + "worker_busy":
+                workerBusy(message_obj)
+            elif topic === prefix + "job_accepted":
+                jobAccepted(message_obj)
+            elif topic === prefix + "job_finished":
+                jobFinished(message_obj)
             elif topic === "list_queue_jobs":
             elif topic === "list_queue_workers":
             elif topic === "list_queue_progress":
