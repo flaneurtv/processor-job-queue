@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 import datetime as dt
-import redis as r
-import uuid, ciso8601
+import redis
+import uuid, ciso8601, os, sys, json, socket, re
 
 ### Begin Logging Setup ###
 import logging
@@ -31,6 +31,12 @@ console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 ### End Logging Setup ###
 
+service_name = os.getenv("SERVICE_UUID", "job-queue")
+service_uuid = os.getenv("SERVICE_UUID", uuid.uuid4())
+service_host = os.getenv("SERVICE_UUID", socket.gethostname())
+namespace_listener = os.getenv("NAMESPACE_LISTENER", "default")
+namespace_publisher = os.getenv("NAMESPACE_PUBLISHER", "default")
+
 
 r = redis.StrictRedis(host='redis', port=6379, db=0)
 
@@ -40,8 +46,8 @@ r = redis.StrictRedis(host='redis', port=6379, db=0)
 #
 # declare constants
 TICK_INTERVAL = 3000
-WORKER_EXPIRY_PERIOD = TICK_INTERVAL * 2
-MAX_LEASE_TIME = TICK_INTERVAL * 2
+WORKER_EXPIRY_PERIOD = TICK_INTERVAL * 20
+MAX_LEASE_TIME = TICK_INTERVAL * 20
 #
 # JOBS_QUEUED - Redis List - holds available jobs
 JOBS_QUEUED = "jobs_queued:"
@@ -90,10 +96,6 @@ WORKERS_BUSY_SET = "workers_busy:"
 #
 ### END - BASIC FUNCTIONAL PATTERN ###
 
-
-namespace_listener = os.getenv("NAMESPACE_LISTENER", "")
-namespace_publisher = os.getenv("NAMESPACE_PUBLISHER", "")
-
 # hset job_uuid job
 # lpush to JOBS_QUEUED:queue_name
 def addJob(message_obj):
@@ -105,18 +107,27 @@ def addJob(message_obj):
     pipe.hset(job_uuid, "json", json.dumps(message_obj["payload"], separators=(',',':')))
     pipe.lpush(JOBS_QUEUED + queue_name, job_uuid)
     pipe.execute();
+
+worker_idle_lua = """
+    redis.call("SADD", KEYS[1], ARGV[1])
+    redis.call("SREM", KEYS[2], ARGV[1])
+    redis.call("ZADD", KEYS[3], ARGV[2], ARGV[1])
+    return redis.call("SMEMBERS", KEYS[1])
+"""
+worker_idle_script = r.register_script(worker_idle_lua)
     
 def workerIdle(message_obj):
     logger.debug("workerIdle")
     queue_name = message_obj["payload"]["queue_name"]
     last_seen = ciso8601.parse_datetime(message_obj["created_at"]).timestamp()
     worker_uuid = message_obj["service_uuid"]
-    pipe = r.pipeline()
-    pipe.multi()
-    pipe.sadd(WORKERS_IDLE_SET + queue_name, worker_uuid)
-    pipe.srem(WORKERS_BUSY_SET + queue_name, worker_uuid)
-    pipe.zadd(WORKERS_LAST_SEEN + queue_name, last_seen, worker_uuid)
-    pipe.execute()
+    logger.debug(queue_name + " " + str(last_seen) + " " + worker_uuid + " " + WORKERS_IDLE_SET + queue_name + " " + WORKERS_BUSY_SET + queue_name)
+    result = worker_idle_script(keys=[
+        WORKERS_IDLE_SET + queue_name,
+        WORKERS_BUSY_SET + queue_name,
+        WORKERS_LAST_SEEN + queue_name
+        ], args=[worker_uuid, last_seen])
+    logger.debug(str(result))
 
 def workerBusy(message_obj):
     logger.debug("workerBusy")
@@ -156,43 +167,50 @@ def jobFinished(message_obj):
     pipe.execute()
 
 dispatchJob_lua = """
-local job_uuid = redis.call("RPOP", KEYS[1])
-local worker_uuid = redis.call("SRANDMEMBER", KEYS[3])
+redis.replicate_commands()
+local number_of_jobs = redis.call("LLEN", KEYS[1])
+local number_of_workers = redis.call("SCARD", KEYS[3])
 
-if job_uuid != nil and worker_uuid != nil then
-    redis.call("ZADD", KEYS[2], tonumber(ARGV[1]), job_uuid)
-    redis.call("HSET", job_uuid, "dispatched_at", tonumber(ARGV[1]))
-    redis.call("SREM", worker_uuid, KEYS[3])
-    redis.call("SADD", worker_uuid, KEYS[4])
-    job_json = redis.call("HGET", job_uuid, "json")
+if (number_of_jobs > 0 and number_of_workers > 0) then
+    local job_uuid = redis.call("RPOP", KEYS[1])
+    local worker_uuid = redis.call("SPOP", KEYS[3])
+    redis.call("SADD", KEYS[4], worker_uuid)
+    redis.call("ZADD", KEYS[2], ARGV[2], job_uuid )
+    redis.call("HSET", job_uuid, "dispatched_at", ARGV[1])
+    local job_json = redis.call("HGET", job_uuid, "json")
     return {job_json, worker_uuid}
 else
-    redis.call("RPUSH", KEYS[1], job_uuid)
     return false
 end
 """
 dispatchJob_script = r.register_script(dispatchJob_lua)
 
 def dispatchJob(message_obj):
-    logger.debug("jobFinished")
+    logger.debug("dispatchJob")
     queue_name = message_obj["payload"]["queue_name"]
     # cleanup duplicated entries
-    r.sdiffstore(WORKERS_IDLE_SET + queue_name, WORKERS_BUSY_SET + queue_name, WORKERS_IDLE_SET + queue_name)
-    dispatched_at = dt.datetime.now().isoformat() + "Z"
+    #r.sdiffstore(WORKERS_IDLE_SET + queue_name, WORKERS_BUSY_SET + queue_name, WORKERS_IDLE_SET + queue_name)
+    now = dt.datetime.now()
+    dispatched_at = now.isoformat() + "Z"
+    dispatched_ts = now.timestamp()
+    logger.debug("dispatched_at: " + dispatched_at + ", dispatched_ts: " + str(dispatched_ts))
     result = dispatchJob_script(keys=[
         JOBS_QUEUED + queue_name,
         JOBS_DISPATCHED + queue_name,
         WORKERS_IDLE_SET + queue_name,
         WORKERS_BUSY_SET + queue_name
-        ], args=[dispatched_at])
+        ], args=[dispatched_at, dispatched_ts])
+    logger.debug("result: " + str(result))
     if result:
-        job_json = result[0]
-        worker_uuid = result[1]
+        logger.debug("result available")
+        logger.debug("result: " + result[0].decode("utf-8"))
+        logger.debug("result: " + result[1].decode("utf-8"))
+        job_json = result[0].decode("utf-8")
+        worker_uuid = result[1].decode("utf-8")
         job_obj = json.loads(job_json)
         job_obj["dispatched_at"] = dispatched_at
         topic = namespace_publisher + "job_queue/workers/" + worker_uuid + "/job_assignment"
-        stdoutMessage(topic, json.dumps(job_obj))
-        # that should be it!
+        stdoutMessage(topic, job_obj)
     
 def jobAccepted(message_obj):
     logger.debug("jobAccepted")
@@ -252,44 +270,66 @@ def removeStaleWorkers(message_obj):
         WORKERS_BUSY_SET + queue_name,
         WORKERS_LAST_SEEN + queue_name
         ], args=[from_timestamp])
+
+def stdoutMessage(topic, payload):
+    message_obj = {}
+    message_obj["topic"] = topic
+    message_obj["service_name"] = service_name
+    message_obj["service_uuid"] = service_uuid
+    message_obj["service_host"] = service_host
+    # Generates datetime ISO 8601 format ex. 2017-04-24T21:16:26.678Z
+    message_obj["created_at"] = dt.datetime.now().isoformat() + "Z"
+    message_obj["payload"] = payload
     
+    print(json.dumps(message_obj, separators=(',',':')))
+    sys.stdout.flush()
+
 
 # reading line by line from stdin
+# FIXME: main keys need initialization, if they are not available yet
 try:
     for json_string in sys.stdin:
         json_string = json_string.strip()
+        # first we check if the payload is valid JSON
         try:
-            # first we check if the payload is valid JSON
-            try:
-                message_obj = json.loads(json_string)
-            except ValueError as e:  # includes simplejson.decoder.JSONDecodeError
-                logger.error('json_parse_error: %(error)s. string_parsed: %(json_string)s' % {'error': str(e), 'json_string': json_string})
-                raise
+            message_obj = json.loads(json_string)
+        except ValueError as e:  # includes simplejson.decoder.JSONDecodeError
+            logger.error('json_parse_error: %(error)s. string_parsed: %(json_string)s' % {'error': str(e), 'json_string': json_string})
+            raise
+        try:
             topic = message_obj["topic"].replace(namespace_listener + "/","")
             prefix = "job_queue/"
-            if topic === prefix + "add_job":
+            if topic == prefix + "add_job":
                 addJob(message_obj)    
-                reAddUnacceptedJobs(message_obj)
-                removeStaleWorkers(message_obj)
+                #reAddUnacceptedJobs(message_obj)
+                #removeStaleWorkers(message_obj)
                 dispatchJob(message_obj)
-            elif topic === "tick":
-                reAddUnacceptedJobs(message_obj)
-                removeStaleWorkers(message_obj)
-            elif topic === prefix + "worker_idle":
+            elif topic == "tick":
+                pass
+            elif re.search('^job_queue/workers/\w{8}-\w{4}-\w{4}-\w{4}-\w{12}/(worker_idle)$', topic):
+                logger.debug("worker_idle")
                 workerIdle(message_obj)
+                #reAddUnacceptedJobs(message_obj)
+                #removeStaleWorkers(message_obj)
                 # do not serve messages older than TICK_INTERVAL
                 if ciso8601.parse_datetime(message_obj["created_at"]).timestamp() > dt.datetime.now().timestamp() - TICK_INTERVAL:
                     dispatchJob(message_obj)
-            elif topic === prefix + "worker_busy":
+            elif topic == prefix + "worker_busy":
                 workerBusy(message_obj)
-            elif topic === prefix + "job_accepted":
+            elif topic == prefix + "job_accepted":
                 jobAccepted(message_obj)
-            elif topic === prefix + "job_finished":
+            elif topic == prefix + "job_finished":
                 jobFinished(message_obj)
-            elif topic === "list_queue_jobs":
-            elif topic === "list_queue_workers":
-            elif topic === "list_queue_progress":
-            elif topic === "list_queue_dispatched":
+            elif topic == "list_queue_jobs":
+                pass
+            elif topic == "list_queue_workers":
+                pass
+            elif topic == "list_queue_progress":
+                pass
+            elif topic == "list_queue_dispatched":
+                pass
+        except KeyError as e:
+            logger.error('KeyError: %(error)s. string_parsed: %(json_string)s' % {'error': str(e), 'json_string': json_string})
 except IOError as e:
     if e.errno == errno.EPIPE:
         logger.error("service-processor stdin PIPE was closed")
