@@ -24,6 +24,8 @@ case $IN in
   *) PROCESSOR="./processor" ;;
 esac
 
+JOB_UUID_1=`uuidgen`
+
 while read line
 do
   case $line in
@@ -31,7 +33,7 @@ do
       sleep `echo $line | tr -s ' ' | cut -d ' ' -f 2` 
       ;;
     *) 
-      echo $line | CREATED_AT=`date -u +"%FT%T.%NZ"` envsubst 
+      echo $line | CREATED_AT=`date -u +"%FT%T.%NZ"` JOB_UUID_1=$JOB_UUID_1 JOB_UUID=`uuidgen` envsubst 
       ;;
   esac
 done < $TESTFILE | $PROCESSOR | jq '.'

@@ -31,9 +31,9 @@ console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 ### End Logging Setup ###
 
-service_name = os.getenv("SERVICE_UUID", "job-queue")
-service_uuid = os.getenv("SERVICE_UUID", uuid.uuid4())
-service_host = os.getenv("SERVICE_UUID", socket.gethostname())
+service_name = os.getenv("SERVICE_NAME", "job_queue")
+service_uuid = os.getenv("SERVICE_UUID", str(uuid.uuid4()))
+service_host = os.getenv("SERVICE_HOST", socket.gethostname())
 namespace_listener = os.getenv("NAMESPACE_LISTENER", "default")
 namespace_publisher = os.getenv("NAMESPACE_PUBLISHER", "default")
 
@@ -45,9 +45,9 @@ r = redis.StrictRedis(host='redis', port=6379, db=0)
 # (Prioritization is implemented on the message- and method-level)
 #
 # declare constants
-TICK_INTERVAL = 3000
-WORKER_EXPIRY_PERIOD = TICK_INTERVAL * 20
-MAX_LEASE_TIME = TICK_INTERVAL * 20
+TICK_INTERVAL = 3.0 #seconds
+WORKER_EXPIRY_PERIOD = TICK_INTERVAL * 3
+MAX_LEASE_TIME = TICK_INTERVAL * 3
 #
 # JOBS_QUEUED - Redis List - holds available jobs
 JOBS_QUEUED = "jobs_queued:"
@@ -55,7 +55,7 @@ JOBS_QUEUED = "jobs_queued:"
 # JOBS_DISPATCHED - Redis Sorted Set - holds jobs dispatched but not yet accepted
 JOBS_DISPATCHED = "jobs_dispatched:"
 #
-# JOBS_FINISHED - Redis Sorted Set - holds finished jobs
+# JOBS_FINISHED - Redis Sorted Set - holds finished jobs with finished_at as score
 JOBS_FINISHED = "jobs_finished:"
 #
 # JOBS_PROCESSING - Redis Sorted Set - holds dispatched jobs, which have been 
@@ -219,18 +219,18 @@ def jobAccepted(message_obj):
     # adding job to JOBS_PROGRESS with 0 as score
     queue_name = message_obj["payload"]["queue_name"]
     job_uuid = message_obj["payload"]["uuid"]
-    started_at = message_obj["payload"]["started_at"]
+    started_at = ciso8601.parse_datetime(message_obj["payload"]["started_at"]).timestamp()
     worker_uuid = message_obj["service_uuid"]
     pipe = r.pipeline()
     pipe.multi()
     pipe.zrem(JOBS_DISPATCHED + queue_name, job_uuid)
     pipe.zadd(JOBS_PROCESSING + queue_name, started_at, job_uuid);
     pipe.zadd(JOBS_PROGRESS + queue_name, 0, job_uuid);
-    pipe.hset(job_uuid, "json", json.dumps(message_obj["payload"], separators=(',',':')), "started_at", message_obj["payload"]["started_at"], "worker_uuid", worker_uuid)
+    pipe.hmset(job_uuid, {"json":json.dumps(message_obj["payload"], separators=(',',':')), "started_at":message_obj["payload"]["started_at"], "worker_uuid": worker_uuid})
     pipe.execute();
 
 re_add_unaccepted_jobs_lua = """
-local stale_jobs = redis.call("ZREVRANGEBYSCORE", KEYS[2], tonumber(ARGV[1]), "+inf")
+local stale_jobs = redis.call("ZREVRANGEBYSCORE", KEYS[2], tonumber(ARGV[1]), "-inf")
 
 for index, job_uuid in ipairs(stale_jobs) do
   redis.call("ZREM", KEYS[2], job_uuid)
@@ -250,7 +250,7 @@ def reAddUnacceptedJobs(message_obj):
         ], args=[from_timestamp])
 
 remove_stale_workers_lua = """
-local stale_workers = redis.call("ZREVRANGEBYSCORE", KEYS[3], "-inf", tonumber(ARGV[1]))
+local stale_workers = redis.call("ZREVRANGEBYSCORE", KEYS[3], tonumber(ARGV[1]), "-inf")
 
 for index, job_uuid in ipairs(stale_workers) do
   redis.call("SREM", KEYS[1], job_uuid)
@@ -301,24 +301,24 @@ try:
             prefix = "job_queue/"
             if topic == prefix + "add_job":
                 addJob(message_obj)    
-                #reAddUnacceptedJobs(message_obj)
-                #removeStaleWorkers(message_obj)
+                reAddUnacceptedJobs(message_obj)
+                removeStaleWorkers(message_obj)
                 dispatchJob(message_obj)
             elif topic == "tick":
                 pass
             elif re.search('^job_queue/workers/\w{8}-\w{4}-\w{4}-\w{4}-\w{12}/(worker_idle)$', topic):
                 logger.debug("worker_idle")
                 workerIdle(message_obj)
-                #reAddUnacceptedJobs(message_obj)
-                #removeStaleWorkers(message_obj)
+                reAddUnacceptedJobs(message_obj)
+                removeStaleWorkers(message_obj)
                 # do not serve messages older than TICK_INTERVAL
                 if ciso8601.parse_datetime(message_obj["created_at"]).timestamp() > dt.datetime.now().timestamp() - TICK_INTERVAL:
                     dispatchJob(message_obj)
             elif topic == prefix + "worker_busy":
                 workerBusy(message_obj)
-            elif topic == prefix + "job_accepted":
+            elif re.search('^job_queue/workers/\w{8}-\w{4}-\w{4}-\w{4}-\w{12}/(job_accepted)$', topic):
                 jobAccepted(message_obj)
-            elif topic == prefix + "job_finished":
+            elif re.search('^job_queue/workers/\w{8}-\w{4}-\w{4}-\w{4}-\w{12}/(job_finished)$', topic):
                 jobFinished(message_obj)
             elif topic == "list_queue_jobs":
                 pass
@@ -328,6 +328,8 @@ try:
                 pass
             elif topic == "list_queue_dispatched":
                 pass
+            elif topic == "del_job":
+                    pass
         except KeyError as e:
             logger.error('KeyError: %(error)s. string_parsed: %(json_string)s' % {'error': str(e), 'json_string': json_string})
 except IOError as e:
