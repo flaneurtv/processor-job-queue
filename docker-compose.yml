@@ -1,0 +1,66 @@
+# This docker-compose.yml is for demonstration purposes. If you run
+# docker-compose build && docker-compose up, you will have a local mosquitto
+# mqtt server running and a ticker microservice, which is using the
+# samm connected to it, publishing a tick message every
+# 3 seconds with topic default/tick. You can e.g. use mqtt-spy to monitor these
+# messages.
+version: '3'
+services:
+  mqtt:
+    image: eclipse-mosquitto
+    ports:
+     - "1883:1883"
+    networks:
+      - service-network
+    restart: always
+  redis:
+    image: eclipse-mosquitto
+    ports:
+     - "6379:6379"
+    networks:
+      - redis-network
+    restart: always
+  job-queue:
+    depends_on:
+      - mqtt
+    image: flaneurtv/samm-job-queue
+    build: .
+    environment:
+      - "LOG_LEVEL=debug"
+      - "LOG_LEVEL_MQTT=debug"
+      - "NAMESPACE_LISTENER=default"
+      - "NAMESPACE_PUBLISHER=default"
+    networks:
+      - service-network
+      - redis-network
+    restart: always
+#  test-sender:
+#    depends_on:
+#      - mqtt
+#    build: ./examples/test-sender
+#    image: flaneurtv/samm-test-sender
+#    environment:
+#      - "LOG_LEVEL=debug"
+#      - "LOG_LEVEL_MQTT=debug"
+#      - "NAMESPACE_LISTENER=default"
+#      - "NAMESPACE_PUBLISHER=default"
+#    networks:
+#      - service-network
+#    volumes:
+#      - ./examples/test-sender/:/srv/
+#    restart: always
+  ticker:
+    depends_on:
+      - mqtt
+    image: flaneurtv/samm-ticker
+    environment:
+      - "LOG_LEVEL=debug"
+      - "LOG_LEVEL_MQTT=debug"
+      - "NAMESPACE_LISTENER=default"
+      - "NAMESPACE_PUBLISHER=default"
+    networks:
+      - service-network
+    restart: always
+networks:
+  service-network:
+  redis-network:
