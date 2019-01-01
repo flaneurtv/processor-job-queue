@@ -58,9 +58,9 @@ JOBS_DISPATCHED = "jobs_dispatched:"
 # JOBS_FINISHED - Redis Sorted Set - holds finished jobs with finished_at as score
 JOBS_FINISHED = "jobs_finished:"
 #
-# JOBS_PROCESSING - Redis Sorted Set - holds dispatched jobs, which have been 
-# accepted by a worker and are therefore processing now. Score is the timestamp 
-# of the job_accepted message at first and the timestamp of the last 
+# JOBS_PROCESSING - Redis Sorted Set - holds dispatched jobs, which have been
+# accepted by a worker and are therefore processing now. Score is the timestamp
+# of the job_accepted message at first and the timestamp of the last
 # worker_progress message later.
 JOBS_PROCESSING = "jobs_processing:"
 #
@@ -71,28 +71,28 @@ JOBS_PROGRESS = "jobs_progress:"
 #
 # WORKERS_LAST_SEEN - Redis Sorted Set - is there just for maintenance, it holds
 # the timestamp of the last worker_idle, worker_progress, worker_finished as its
-# score. On tick we purge workers older than WORKER_EXPIRY_PERIOD from both 
-# WORKERS_IDLE_SET and WORKERS_BUSY_SET. 
-# WARNING: 
+# score. On tick we purge workers older than WORKER_EXPIRY_PERIOD from both
+# WORKERS_IDLE_SET and WORKERS_BUSY_SET.
+# WARNING:
 # Workers MUST send and idle or progress message at least on every tick!!!
 WORKERS_LAST_SEEN = "workers_last_seen:"
 #
-# WORKERS_IDLE_SET - Redis Set - holds currently idle workers. When a 
-# worker_idle is received we add the worker to this group and remove it from 
-# WORKERS_BUSY_SET. When a job is dispatched, we move the worker from 
+# WORKERS_IDLE_SET - Redis Set - holds currently idle workers. When a
+# worker_idle is received we add the worker to this group and remove it from
+# WORKERS_BUSY_SET. When a job is dispatched, we move the worker from
 # WORKERS_IDLE_SET to WORKERS_BUSY_SET.
 WORKERS_IDLE_SET = "workers_idle:"
 #
-# WORKERS_BUSY_SET - Redis Set - holds currently busy workers. When a 
+# WORKERS_BUSY_SET - Redis Set - holds currently busy workers. When a
 # job_accepted or a worker_progress is received, we add worker to this group and
-# remove it from WORKERS_IDLE_SET. When a job_finished is received, we move 
+# remove it from WORKERS_IDLE_SET. When a job_finished is received, we move
 # the worker back to the WORKERS_IDLE_SET.
 WORKERS_BUSY_SET = "workers_busy:"
 #
-# LAST_SEEN, IDLE and BUSY are sufficient, as jobs, which have been 
-# wrongfully dispatched, for whatever reason, will be readmitted to JOBS_QUEUED 
-# anyways after MAX_LEASE_TIME. So we are fail-safe by design and therefore 
-# immune to little hick-ups on this end, however likely or unlikeley they are. 
+# LAST_SEEN, IDLE and BUSY are sufficient, as jobs, which have been
+# wrongfully dispatched, for whatever reason, will be readmitted to JOBS_QUEUED
+# anyways after MAX_LEASE_TIME. So we are fail-safe by design and therefore
+# immune to little hick-ups on this end, however likely or unlikeley they are.
 #
 ### END - BASIC FUNCTIONAL PATTERN ###
 
@@ -115,7 +115,7 @@ worker_idle_lua = """
     return redis.call("SMEMBERS", KEYS[1])
 """
 worker_idle_script = r.register_script(worker_idle_lua)
-    
+
 def workerIdle(message_obj):
     logger.debug("workerIdle")
     queue_name = message_obj["payload"]["queue_name"]
@@ -209,9 +209,9 @@ def dispatchJob(message_obj):
         worker_uuid = result[1].decode("utf-8")
         job_obj = json.loads(job_json)
         job_obj["dispatched_at"] = dispatched_at
-        topic = namespace_publisher + "job_queue/workers/" + worker_uuid + "/job_assignment"
+        topic = namespace_publisher + "/job_queue/workers/" + worker_uuid + "/job_assignment"
         stdoutMessage(topic, job_obj)
-    
+
 def jobAccepted(message_obj):
     logger.debug("jobAccepted")
     # removing job from JOBS_DISPATCHED
@@ -280,7 +280,7 @@ def stdoutMessage(topic, payload):
     # Generates datetime ISO 8601 format ex. 2017-04-24T21:16:26.678Z
     message_obj["created_at"] = dt.datetime.now().isoformat() + "Z"
     message_obj["payload"] = payload
-    
+
     print(json.dumps(message_obj, separators=(',',':')))
     sys.stdout.flush()
 
@@ -300,7 +300,7 @@ try:
             topic = message_obj["topic"].replace(namespace_listener + "/","")
             prefix = "job_queue/"
             if topic == prefix + "add_job":
-                addJob(message_obj)    
+                addJob(message_obj)
                 reAddUnacceptedJobs(message_obj)
                 removeStaleWorkers(message_obj)
                 dispatchJob(message_obj)

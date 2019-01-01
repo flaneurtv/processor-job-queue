@@ -1,0 +1,37 @@
+{"a":"value A", "b": "value B"}
+sleep 1
+{"a":"value C", "b": "value D"}
+sleep 1
+{"a":"value E", "b": "value F"}
+sleep 1
+{"a":"value G", "b": "value H"}
+sleep 1
+{"topic":"default/tick","service_uuid":"TICKER00-1285-4E4C-A44E-AAAABBBB0000","service_name":"micro-worker-ffmpeg","service_host":"ticker","created_at":"$CREATED_AT","payload":{"uuid":"TICKAAAA-1285-4E4C-A44E-TICKAAAA0000","timestamp":"$CREATED_AT"}}
+sleep 1
+{"topic":"default/tick","service_uuid":"TICKER00-1285-4E4C-A44E-AAAABBBB0000","service_name":"micro-worker-ffmpeg","service_host":"ticker","created_at":"$CREATED_AT","payload":{"tick_uuid":"TICKAAAA-1285-4E4C-A44E-TICKAAAA0001","tick_timestamp":"$CREATED_AT"}}
+sleep 1
+{"topic":"default/tick","service_uuid":"TICKER00-1285-4E4C-A44E-AAAABBBB0000","service_name":"micro-worker-ffmpeg","service_host":"ticker","created_at":"$CREATED_AT","payload":{"tick_uuid":"TICKAAAA-1285-4E4C-A44E-TICKAAAA0002","tick_timestamp":"$CREATED_AT"}}
+sleep 1
+{"topic":"default/tick","service_uuid":"TICKER00-1285-4E4C-A44E-AAAABBBB0000","service_name":"micro-worker-ffmpeg","service_host":"ticker","created_at":"$CREATED_AT","payload":{"tick_uuid":"TICKAAAA-1285-4E4C-A44E-TICKAAAA0003","tick_timestamp":"$CREATED_AT"}}
+sleep 1
+{"topic":"default/tick","service_uuid":"TICKER00-1285-4E4C-A44E-AAAABBBB0000","service_name":"micro-worker-ffmpeg","service_host":"ticker","created_at":"$CREATED_AT","payload":{"tick_uuid":"TICKAAAA-1285-4E4C-A44E-TICKAAAA0004","tick_timestamp":"$CREATED_AT"}}
+sleep 1
+{"topic":"default/tick","service_uuid":"TICKER00-1285-4E4C-A44E-AAAABBBB0000","service_name":"micro-worker-ffmpeg","service_host":"ticker","created_at":"$CREATED_AT","payload":{"tick_uuid":"TICKAAAA-1285-4E4C-A44E-TICKAAAA0005","tick_timestamp":"$CREATED_AT"}}
+sleep 1
+{"topic":"default/tick","service_uuid":"TICKER00-1285-4E4C-A44E-AAAABBBB0000","service_name":"micro-worker-ffmpeg","service_host":"ticker","created_at":"$CREATED_AT","payload":{"tick_uuid":"TICKAAAA-1285-4E4C-A44E-TICKAAAA0003","tick_timestamp":"$CREATED_AT"}}
+sleep 1
+{"topic":"default/tick","service_uuid":"TICKER00-1285-4E4C-A44E-AAAABBBB0000","service_name":"micro-worker-ffmpeg","service_host":"ticker","created_at":"$CREATED_AT","payload":{"tick_uuid":"TICKAAAA-1285-4E4C-A44E-TICKAAAA0004","tick_timestamp":"$CREATED_AT"}}
+sleep 1
+{"topic":"default/tick","service_uuid":"TICKER00-1285-4E4C-A44E-AAAABBBB0000","service_name":"micro-worker-ffmpeg","service_host":"ticker","created_at":"$CREATED_AT","payload":{"tick_uuid":"TICKAAAA-1285-4E4C-A44E-TICKAAAA0005","tick_timestamp":"$CREATED_AT"}}
+sleep 1
+{"topic":"default/tick","service_uuid":"TICKER00-1285-4E4C-A44E-AAAABBBB0000","service_name":"micro-worker-ffmpeg","service_host":"ticker","created_at":"$CREATED_AT","payload":{"tick_uuid":"TICKAAAA-1285-4E4C-A44E-TICKAAAA0003","tick_timestamp":"$CREATED_AT"}}
+sleep 1
+{"topic":"default/tick","service_uuid":"TICKER00-1285-4E4C-A44E-AAAABBBB0000","service_name":"micro-worker-ffmpeg","service_host":"ticker","created_at":"$CREATED_AT","payload":{"tick_uuid":"TICKAAAA-1285-4E4C-A44E-TICKAAAA0004","tick_timestamp":"$CREATED_AT"}}
+sleep 1
+{"topic":"default/tick","service_uuid":"TICKER00-1285-4E4C-A44E-AAAABBBB0000","service_name":"micro-worker-ffmpeg","service_host":"ticker","created_at":"$CREATED_AT","payload":{"tick_uuid":"TICKAAAA-1285-4E4C-A44E-TICKAAAA0005","tick_timestamp":"$CREATED_AT"}}
+sleep 1
+{"topic":"default/tick","service_uuid":"TICKER00-1285-4E4C-A44E-AAAABBBB0000","service_name":"micro-worker-ffmpeg","service_host":"ticker","created_at":"$CREATED_AT","payload":{"tick_uuid":"TICKAAAA-1285-4E4C-A44E-TICKAAAA0003","tick_timestamp":"$CREATED_AT"}}
+sleep 1
+{"topic":"default/tick","service_uuid":"TICKER00-1285-4E4C-A44E-AAAABBBB0000","service_name":"micro-worker-ffmpeg","service_host":"ticker","created_at":"$CREATED_AT","payload":{"tick_uuid":"TICKAAAA-1285-4E4C-A44E-TICKAAAA0004","tick_timestamp":"$CREATED_AT"}}
+sleep 1
+{"topic":"default/tick","service_uuid":"TICKER00-1285-4E4C-A44E-AAAABBBB0000","service_name":"micro-worker-ffmpeg","service_host":"ticker","created_at":"$CREATED_AT","payload":{"tick_uuid":"TICKAAAA-1285-4E4C-A44E-TICKAAAA0005","tick_timestamp":"$CREATED_AT"}}

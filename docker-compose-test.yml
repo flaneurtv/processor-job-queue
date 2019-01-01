@@ -30,25 +30,27 @@ services:
       - "LOG_LEVEL_MQTT=debug"
       - "NAMESPACE_LISTENER=default"
       - "NAMESPACE_PUBLISHER=default"
+    volumes:
+      - ./examples:/srv/examples
+    working_dir: /srv/examples/test-sender/
     networks:
       - service-network
       - redis-network
     restart: always
-#  test-sender:
-#    depends_on:
-#      - mqtt
-#    build: ./examples/test-sender
-#    image: flaneurtv/samm-test-sender
-#    environment:
-#      - "LOG_LEVEL=debug"
-#      - "LOG_LEVEL_MQTT=debug"
-#      - "NAMESPACE_LISTENER=default"
-#      - "NAMESPACE_PUBLISHER=default"
-#    networks:
-#      - service-network
-#    volumes:
-#      - ./examples/test-sender/:/srv/
-#    restart: always
+  # samm-test-sender:
+  #   depends_on:
+  #     - mqtt
+  #   build: ./examples/test-sender
+  #   environment:
+  #     - "LOG_LEVEL=debug"
+  #     - "LOG_LEVEL_MQTT=debug"
+  #     - "NAMESPACE_LISTENER=default"
+  #     - "NAMESPACE_PUBLISHER=default"
+  #   networks:
+  #     - service-network
+  #   volumes:
+  #     - ./examples/test-sender/:/srv/
+  #   restart: always
   samm-ticker:
     depends_on:
       - mqtt
